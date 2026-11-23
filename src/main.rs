@@ -99,7 +99,7 @@ fn main() -> eframe::Result<()> {
     let mut options = eframe::NativeOptions { viewport, ..Default::default() };
     #[cfg(target_os = "macos")]
     if shot.is_some() {
-        use eframe::winit::platform::macos::EventLoopBuilderExtMacOS;
+        use winit::platform::macos::EventLoopBuilderExtMacOS;
         options.event_loop_builder = Some(Box::new(|b| {
             b.with_activate_ignoring_other_apps(false);
         }));
