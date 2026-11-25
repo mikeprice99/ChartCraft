@@ -19,6 +19,8 @@ pub struct Conn {
     pub password: String,
     /// The database to start on (connect.ini's default), if any.
     pub database: String,
+    /// Saved by ChartCraft itself (so it can be updated or forgotten here).
+    pub mine: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -121,6 +123,7 @@ fn heidi_connections() -> Vec<Conn> {
             user: k.get_value("User").unwrap_or_default(),
             password: decrypt_heidi(&k.get_value::<String, _>("Password").unwrap_or_default()),
             database: String::new(),
+            mine: false,
         });
     }
     out
@@ -143,6 +146,7 @@ fn yog_connections() -> Vec<Conn> {
             user: ini_get(&ini, s, "User").unwrap_or("").to_string(),
             password: decrypt_yog(ini_get(&ini, s, "Password").unwrap_or("")),
             database: String::new(),
+            mine: false,
         })
         .collect()
 }
@@ -162,7 +166,7 @@ fn ini_connection() -> Option<Conn> {
     let user = ini_get(&ini, &database, "rw").unwrap_or("").to_string();
     let password = ini_get(&ini, &user, "password").unwrap_or("").to_string();
     let port = ini_get(&ini, "mysql", "port").and_then(|p| p.parse().ok()).unwrap_or(3306);
-    Some(Conn { label: "connect.ini (default connection)".into(), host, port, user, password, database })
+    Some(Conn { label: "connect.ini (default connection)".into(), host, port, user, password, database, mine: false })
 }
 
 /// Every connection saved on this computer.
@@ -172,6 +176,60 @@ pub fn saved_connections() -> Vec<Conn> {
     v.extend(heidi_connections());
     v.extend(yog_connections());
     v
+}
+
+// ---------------------------------------------------------------- ChartCraft's own saved connections
+
+/// Passwords in our own file are scrambled the SQLyog way so they aren't sitting there as
+/// plain text. That only stops a casual glance; the file itself is kept private to the user.
+pub fn scramble(s: &str) -> String {
+    let bytes: Vec<u8> = s.bytes().map(|b| b.rotate_right(1)).collect();
+    crate::dia::base64_encode(&bytes)
+}
+
+/// The connections saved from the import window (a JSON list in the settings folder).
+pub fn load_own(path: &std::path::Path) -> Vec<Conn> {
+    let Ok(text) = std::fs::read_to_string(path) else { return vec![] };
+    let Ok(serde_json::Value::Array(items)) = serde_json::from_str(&text) else { return vec![] };
+    let s = |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    items
+        .iter()
+        .map(|v| Conn {
+            label: s(v, "name"),
+            host: s(v, "host"),
+            port: v.get("port").and_then(|p| p.as_u64()).and_then(|p| u16::try_from(p).ok()).unwrap_or(3306),
+            user: s(v, "user"),
+            password: decrypt_yog(&s(v, "password")),
+            database: s(v, "database"),
+            mine: true,
+        })
+        .filter(|c| !c.label.is_empty())
+        .collect()
+}
+
+pub fn save_own(path: &std::path::Path, list: &[Conn]) -> std::io::Result<()> {
+    let items: Vec<serde_json::Value> = list
+        .iter()
+        .map(|c| {
+            let mut v = serde_json::json!({ "name": c.label, "host": c.host, "port": c.port, "user": c.user, "database": c.database });
+            if !c.password.is_empty() {
+                v["password"] = scramble(&c.password).into();
+            }
+            v
+        })
+        .collect();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let text = serde_json::to_string_pretty(&items).map_err(std::io::Error::other)?;
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, text)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    }
+    std::fs::rename(&tmp, path)
 }
 
 // ---------------------------------------------------------------- talking to MySQL

@@ -628,6 +628,17 @@ fn mysql_import_pieces() {
     let columns = many.iter().map(|e| (e.rect.x * 100.0) as i64).collect::<std::collections::BTreeSet<_>>().len();
     assert!(columns >= 2, "laid out in more than one column");
 
+    // ChartCraft's own saved connections survive a save and load; the password isn't stored as plain text.
+    let file = std::env::temp_dir().join(format!("chartcraft-conns-{}.json", std::process::id()));
+    let list = vec![
+        mi::Conn { label: "live".into(), host: "db.example".into(), port: 3307, user: "me".into(), password: "pa55".into(), database: "shop".into(), mine: true },
+        mi::Conn { label: "local".into(), host: "localhost".into(), port: 3306, user: "root".into(), password: String::new(), database: String::new(), mine: true },
+    ];
+    mi::save_own(&file, &list).unwrap();
+    assert!(!std::fs::read_to_string(&file).unwrap().contains("pa55"));
+    assert_eq!(mi::load_own(&file), list);
+    let _ = std::fs::remove_file(&file);
+
     // The saved connections on this computer (names only).
     for c in mi::saved_connections() {
         println!("saved connection: {} ({}:{}) user set: {}, password set: {}", c.label, c.host, c.port, !c.user.is_empty(), !c.password.is_empty());

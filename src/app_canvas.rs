@@ -1,6 +1,6 @@
 //! The drawing area: mouse, keyboard, rendering, rulers, scroll bars and typing into shapes.
 
-use super::app_ui::menu_item;
+use super::app_ui::{keys, menu_item};
 use super::*;
 
 fn dashed_rect(p: &egui::Painter, r: Rect, stroke: Stroke, dash: f32) {
@@ -302,21 +302,21 @@ impl App {
             let any = !self.ed.sel.is_empty();
             let one_text = self.ed.sel.len() == 1 && self.ed.d.get(self.ed.sel[0]).and_then(|o| o.text()).is_some();
             let poly = self.ed.sel.len() == 1 && matches!(self.ed.d.get(self.ed.sel[0]).map(|o| &o.kind), Some(Kind::Line(l)) if l.kind == LineKind::PolyLine);
-            if menu_item(ui, "Properties…", "Alt+Enter", true) {
+            if menu_item(ui, "Properties…", keys("Alt+Enter", "⌘I"), true) {
                 *act = Some(Action::Props);
             }
-            if one_text && menu_item(ui, "Edit text", "F2", true) {
+            if one_text && menu_item(ui, "Edit text", keys("F2", "Return"), true) {
                 *act = Some(Action::EditText);
             }
             ui.separator();
             let items: [(&str, &str, bool, Action); 7] = [
-                ("Cut", "Ctrl+X", any, Action::Cut),
-                ("Copy", "Ctrl+C", any, Action::Copy),
-                ("Paste", "Ctrl+V", self.ed.can_paste(), Action::Paste),
-                ("Duplicate", "Ctrl+D", any, Action::Duplicate),
-                ("Delete", "Del", any, Action::Delete),
-                ("Bring to front", "Ctrl+F", any, Action::Reorder(0)),
-                ("Send to back", "Ctrl+B", any, Action::Reorder(1)),
+                ("Cut", keys("Ctrl+X", "⌘X"), any, Action::Cut),
+                ("Copy", keys("Ctrl+C", "⌘C"), any, Action::Copy),
+                ("Paste", keys("Ctrl+V", "⌘V"), self.ed.can_paste(), Action::Paste),
+                ("Duplicate", keys("Ctrl+D", "⌘D"), any, Action::Duplicate),
+                ("Delete", keys("Del", "⌫"), any, Action::Delete),
+                ("Bring to front", keys("Ctrl+F", "⇧⌘F"), any, Action::Reorder(0)),
+                ("Send to back", keys("Ctrl+B", "⇧⌘B"), any, Action::Reorder(1)),
             ];
             for (i, (t, k, en, a)) in items.iter().enumerate() {
                 if i == 5 {
@@ -536,7 +536,30 @@ impl App {
         let dialog = self.props.is_some() || self.page.is_some() || self.pdf_open;
         let cmd = egui::Modifiers::COMMAND;
         let cs = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
-        let shortcuts: [(egui::Modifiers, Key, Action, bool); 24] = [
+        // The shortcuts that differ by platform come first: a pattern without Shift also
+        // matches with Shift held, so ⇧⌘F must be tried before any ⌘F.
+        #[cfg(not(target_os = "macos"))]
+        let platform = [
+            (cmd, Key::Tab, Action::NextTab, false),
+            (cmd, Key::F, Action::Reorder(0), true),
+            (cmd, Key::B, Action::Reorder(1), true),
+            (cmd, Key::Num1, Action::Zoom(1.0), true),
+            (egui::Modifiers::ALT, Key::Enter, Action::Props, true),
+        ];
+        #[cfg(target_os = "macos")]
+        let platform = [
+            // ⌘Tab belongs to macOS (switching apps).
+            (egui::Modifiers::CTRL, Key::Tab, Action::NextTab, false),
+            (cs, Key::CloseBracket, Action::NextTab, false),
+            (cs, Key::CloseCurlyBracket, Action::NextTab, false),
+            (cs, Key::F, Action::Reorder(0), true),
+            (cs, Key::B, Action::Reorder(1), true),
+            (cmd, Key::Num0, Action::Zoom(1.0), true),
+            (cmd, Key::I, Action::Props, true),
+            (cs, Key::Questionmark, Action::Tips, false),
+            (cs, Key::Slash, Action::Tips, false),
+        ];
+        let common = [
             (cmd, Key::N, Action::New, false),
             (cmd, Key::O, Action::Open, false),
             (cs, Key::S, Action::SaveAs, false),
@@ -546,23 +569,18 @@ impl App {
             (cmd, Key::P, Action::Print, false),
             (cmd, Key::Q, Action::Exit, false),
             (cmd, Key::W, Action::CloseTab(usize::MAX), false),
-            (cmd, Key::Tab, Action::NextTab, false),
             (cs, Key::Z, Action::Redo, true),
             (cmd, Key::Z, Action::Undo, true),
             (cmd, Key::Y, Action::Redo, true),
             (cmd, Key::D, Action::Duplicate, true),
             (cs, Key::A, Action::SelectNone, true),
             (cmd, Key::A, Action::SelectAll, true),
-            (cmd, Key::F, Action::Reorder(0), true),
-            (cmd, Key::B, Action::Reorder(1), true),
             (cmd, Key::Plus, Action::ZoomIn, true),
             (cmd, Key::Equals, Action::ZoomIn, true),
             (cmd, Key::Minus, Action::ZoomOut, true),
-            (cmd, Key::Num1, Action::Zoom(1.0), true),
-            (egui::Modifiers::ALT, Key::Enter, Action::Props, true),
             (egui::Modifiers::NONE, Key::F1, Action::Tips, false),
         ];
-        for (m, k, a, needs_canvas) in shortcuts {
+        for (m, k, a, needs_canvas) in platform.into_iter().chain(common) {
             if needs_canvas && (typing || dialog) {
                 continue;
             }

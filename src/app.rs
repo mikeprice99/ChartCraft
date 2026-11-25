@@ -19,6 +19,14 @@ mod app_dialogs;
 mod app_mysql;
 #[path = "app_ui.rs"]
 mod app_ui;
+#[cfg(target_os = "macos")]
+#[path = "app_macos.rs"]
+mod app_macos;
+#[cfg(target_os = "macos")]
+pub(crate) use app_macos::install_open_handler;
+#[cfg(target_os = "macos")]
+#[path = "app_macos_menu.rs"]
+mod app_macos_menu;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Action {
@@ -133,6 +141,15 @@ pub struct App {
     /// The drawing area on screen, from the last frame (used for view maths).
     pub(crate) last_area: Rect,
     scroll_drag: Option<(bool, f32, f64)>,
+    /// macOS: the menus in the system menu bar (made on the first frame).
+    #[cfg(target_os = "macos")]
+    native: Option<app_macos_menu::NativeMenu>,
+    /// macOS: whether the close button shows the unsaved-changes dot.
+    #[cfg(target_os = "macos")]
+    edited_shown: Option<bool>,
+    /// macOS: a Control-click is being passed on as a right-click.
+    #[cfg(target_os = "macos")]
+    control_click: bool,
 }
 
 const ZOOMS: [f64; 9] = [0.25, 0.5, 0.707, 0.85, 1.0, 1.41, 2.0, 2.83, 4.0];
@@ -153,6 +170,8 @@ impl App {
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         crate::theme::setup_styles(&cc.egui_ctx);
         crate::icons::install_font(&cc.egui_ctx);
+        #[cfg(target_os = "macos")]
+        app_macos::set_repaint(&cc.egui_ctx);
         let mut app = App {
             ed: Editor::new(),
             file: None,
@@ -190,6 +209,12 @@ impl App {
             about_open: false,
             last_area: Rect::from_min_size(pos2(220.0, 80.0), vec2(900.0, 600.0)),
             scroll_drag: None,
+            #[cfg(target_os = "macos")]
+            native: None,
+            #[cfg(target_os = "macos")]
+            edited_shown: None,
+            #[cfg(target_os = "macos")]
+            control_click: false,
         };
         // Optional: start with a given shape sheet showing (e.g. --sheet UML).
         if let Ok(name) = std::env::var("CHARTCRAFT_SHEET") {
@@ -244,15 +269,26 @@ impl App {
         if !self.ed.modified || self.shot.is_some() {
             return true;
         }
+        #[cfg(not(target_os = "macos"))]
         let r = rfd::MessageDialog::new()
             .set_title("ChartCraft")
             .set_description("Save the changes to this diagram first?")
             .set_level(rfd::MessageLevel::Warning)
             .set_buttons(rfd::MessageButtons::YesNoCancel)
             .show();
+        // The Mac wording and buttons: Save / Don't Save / Cancel.
+        #[cfg(target_os = "macos")]
+        let r = rfd::MessageDialog::new()
+            .set_title(format!("Do you want to save the changes you made to “{}”?", self.base_name()))
+            .set_description("Your changes will be lost if you don’t save them.")
+            .set_level(rfd::MessageLevel::Warning)
+            .set_buttons(rfd::MessageButtons::YesNoCancelCustom("Save".into(), "Don’t Save".into(), "Cancel".into()))
+            .show();
         match r {
             rfd::MessageDialogResult::Yes => self.save(false),
             rfd::MessageDialogResult::No => true,
+            rfd::MessageDialogResult::Custom(b) if b == "Save" => self.save(false),
+            rfd::MessageDialogResult::Custom(b) if b == "Don’t Save" => true,
             _ => false,
         }
     }
@@ -692,6 +728,22 @@ fn recent_file() -> Option<PathBuf> {
     Some(settings_dir()?.join("ChartCraft").join("recent.txt"))
 }
 
+/// macOS: ~/Library/Application Support, where Mac apps keep their settings.
+#[cfg(target_os = "macos")]
+fn settings_dir() -> Option<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    let dir = home.join("Library").join("Application Support");
+    // Earlier builds kept them in ~/.config/ChartCraft: copy them across the first time.
+    let (old, new) = (home.join(".config").join("ChartCraft"), dir.join("ChartCraft"));
+    if !new.exists() && old.is_dir() && std::fs::create_dir_all(&new).is_ok() {
+        for f in ["recent.txt", "theme.txt"] {
+            let _ = std::fs::copy(old.join(f), new.join(f));
+        }
+    }
+    Some(dir)
+}
+
+#[cfg(not(target_os = "macos"))]
 fn settings_dir() -> Option<PathBuf> {
     std::env::var_os("APPDATA").or_else(|| std::env::var_os("XDG_CONFIG_HOME")).map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
 }

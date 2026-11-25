@@ -22,6 +22,8 @@ pub(super) struct MysqlDialog {
     fill: Col,
     into_new: bool,
     update_existing: bool,
+    save_name: String,
+    save_password: bool,
     busy: Option<(String, Receiver<Msg>)>,
     message: String,
     failed: bool,
@@ -30,7 +32,7 @@ pub(super) struct MysqlDialog {
 impl MysqlDialog {
     /// `has_diagram`: a diagram with something in it is open, so new tables go into it by default.
     pub(super) fn new(has_diagram: bool) -> Self {
-        let conns = mi::saved_connections();
+        let conns = all_connections();
         MysqlDialog {
             conns,
             pick: None,
@@ -43,6 +45,8 @@ impl MysqlDialog {
             fill: Col::WHITE,
             into_new: !has_diagram,
             update_existing: true,
+            save_name: String::new(),
+            save_password: false,
             busy: None,
             message: String::new(),
             failed: false,
@@ -65,6 +69,60 @@ impl MysqlDialog {
         c
     }
 
+    /// Save (or update, by name) the details typed in as one of ChartCraft's own connections.
+    fn save_current(&mut self) {
+        let Some(path) = own_file() else {
+            self.set_error("There's no settings folder to save connections in.".into());
+            return;
+        };
+        let mut c = self.conn();
+        c.label = self.save_name.trim().to_string();
+        if c.label.is_empty() {
+            c.label = if c.user.is_empty() { c.host.clone() } else { format!("{}@{}", c.user, c.host) };
+        }
+        if !self.db.is_empty() {
+            c.database = self.db.clone();
+        }
+        if !self.save_password {
+            c.password.clear();
+        }
+        c.mine = true;
+        let mut own = mi::load_own(&path);
+        match own.iter_mut().find(|o| o.label.eq_ignore_ascii_case(&c.label)) {
+            Some(o) => *o = c.clone(),
+            None => own.push(c.clone()),
+        }
+        if let Err(e) = mi::save_own(&path, &own) {
+            self.set_error(format!("Couldn't save the connection: {e}"));
+            return;
+        }
+        self.conns = all_connections();
+        self.pick = self.conns.iter().position(|o| o.mine && o.label == c.label);
+        self.save_name = c.label.clone();
+        self.c.label = c.label.clone();
+        self.message = format!("Saved \"{}\".", c.label);
+        self.failed = false;
+    }
+
+    /// Remove the chosen connection from ChartCraft's own list.
+    fn forget_current(&mut self) {
+        let (Some(path), Some(label)) = (own_file(), self.pick.and_then(|i| self.conns.get(i)).filter(|c| c.mine).map(|c| c.label.clone())) else { return };
+        let own: Vec<Conn> = mi::load_own(&path).into_iter().filter(|o| o.label != label).collect();
+        if let Err(e) = mi::save_own(&path, &own) {
+            self.set_error(format!("Couldn't update the saved connections: {e}"));
+            return;
+        }
+        self.conns = all_connections();
+        self.pick = None;
+        self.message = format!("Forgot \"{label}\".");
+        self.failed = false;
+    }
+
+    fn set_error(&mut self, e: String) {
+        self.message = e;
+        self.failed = true;
+    }
+
     fn connect(&mut self) {
         let c = self.conn();
         self.dbs.clear();
@@ -77,6 +135,18 @@ impl MysqlDialog {
         self.tables.clear();
         self.start("Reading the tables…", move || Msg::Tables(mi::list_tables(&c, &db)));
     }
+}
+
+/// Where the connections saved from this window are kept.
+fn own_file() -> Option<std::path::PathBuf> {
+    Some(super::settings_dir()?.join("ChartCraft").join("mysql-connections.json"))
+}
+
+/// ChartCraft's own saved connections first, then the ones found in HeidiSQL, SQLyog and connect.ini.
+fn all_connections() -> Vec<Conn> {
+    let mut v = own_file().map(|p| mi::load_own(&p)).unwrap_or_default();
+    v.extend(mi::saved_connections());
+    v
 }
 
 impl App {
@@ -144,6 +214,8 @@ impl App {
                             dlg.pick = Some(i);
                             dlg.c = dlg.conns[i].clone();
                             dlg.port_text = dlg.c.port.to_string();
+                            dlg.save_name = if dlg.c.mine { dlg.c.label.clone() } else { String::new() };
+                            dlg.save_password = dlg.c.mine && !dlg.c.password.is_empty();
                             dlg.dbs.clear();
                             dlg.tables.clear();
                             dlg.db.clear();
@@ -164,9 +236,25 @@ impl App {
                         ui.end_row();
                     });
                     ui.add_space(4.0);
-                    if ui.add_enabled(!dlg.c.host.trim().is_empty(), egui::Button::new("Connect")).clicked() {
-                        dlg.connect();
-                    }
+                    ui.horizontal(|ui| {
+                        let has_host = !dlg.c.host.trim().is_empty();
+                        if ui.add_enabled(has_host, egui::Button::new("Connect")).clicked() {
+                            dlg.connect();
+                        }
+                        ui.separator();
+                        ui.label("Save as:");
+                        let hint = if dlg.c.user.is_empty() { dlg.c.host.clone() } else { format!("{}@{}", dlg.c.user, dlg.c.host) };
+                        ui.add(egui::TextEdit::singleline(&mut dlg.save_name).desired_width(130.0).hint_text(hint));
+                        ui.checkbox(&mut dlg.save_password, "with password")
+                            .on_hover_text("Keep the password too. It's stored lightly scrambled in a file only you can read, not in the system keychain.");
+                        if ui.add_enabled(has_host, egui::Button::new("Save")).on_hover_text("Save these details (and the chosen database) for next time. Saving under an existing name updates it.").clicked() {
+                            dlg.save_current();
+                        }
+                        let mine = dlg.pick.and_then(|i| dlg.conns.get(i)).map(|c| c.mine).unwrap_or(false);
+                        if ui.add_enabled(mine, egui::Button::new("Forget")).on_hover_text("Remove the chosen saved connection").clicked() {
+                            dlg.forget_current();
+                        }
+                    });
                     ui.separator();
                     egui::Grid::new("mysql-db").num_columns(2).spacing(vec2(8.0, 6.0)).show(ui, |ui| {
                         ui.label("Database:");

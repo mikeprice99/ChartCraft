@@ -151,12 +151,19 @@ fn window(title: impl Into<egui::WidgetText>) -> egui::Window<'static> {
 
 fn ok_cancel(ui: &mut Ui, ok: &mut bool, cancel: &mut bool) {
     ui.add_space(6.0);
+    go_cancel(ui, "   OK   ", ok, cancel);
+}
+
+/// A dialog's main button and Cancel: main first on Windows and Linux; on macOS Cancel first and
+/// the main button last, as Mac dialogs have them.
+fn go_cancel(ui: &mut Ui, label: &str, go: &mut bool, cancel: &mut bool) {
     ui.horizontal(|ui| {
-        if ui.button("   OK   ").clicked() {
-            *ok = true;
-        }
-        if ui.button("Cancel").clicked() {
-            *cancel = true;
+        if cfg!(target_os = "macos") {
+            *cancel |= ui.button("Cancel").clicked();
+            *go |= ui.button(label).clicked();
+        } else {
+            *go |= ui.button(label).clicked();
+            *cancel |= ui.button("Cancel").clicked();
         }
     });
 }
@@ -672,14 +679,7 @@ impl App {
                 ui.radio_value(mode, PageMode::FitToPaper, fit_label);
                 ui.label(egui::RichText::new("Paper size and margins come from File → Page setup.").color(pal(ui.ctx()).hint));
                 ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Export…").clicked() {
-                        go = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        cancel = true;
-                    }
-                });
+                go_cancel(ui, "Export…", &mut go, &mut cancel);
             });
             if !open || cancel {
                 self.pdf_open = false;
@@ -730,7 +730,11 @@ impl App {
                     "Draw a line or zigzag from one shape to another: its ends stick to the shapes (red handles) and follow them when you move them.",
                     "Double-click a tool to keep using it; Esc goes back to the arrow.",
                     "Shift+click, or drag a box around objects, to select several. Arrow keys nudge them.",
-                    "Ctrl + mouse wheel zooms; the middle mouse button drags the view.",
+                    if cfg!(target_os = "macos") {
+                        "Pinch the trackpad, or hold ⌘ and scroll, to zoom. Scroll with two fingers, or use the hand tool, to move around."
+                    } else {
+                        "Ctrl + mouse wheel zooms; the middle mouse button drags the view."
+                    },
                     "File → Export to PDF makes a PDF; File → Save keeps the diagram as a .dia file.",
                 ] {
                     ui.label(format!("•  {t}"));
@@ -887,7 +891,12 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+    #[cfg(target_os = "macos")]
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        app_macos::control_click_as_right_click(raw, &mut self.control_click);
+    }
+
+    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let mut act: Option<Action> = None;
 
@@ -925,17 +934,38 @@ impl eframe::App for App {
         }
 
         let name = self.file.as_ref().and_then(|f| f.file_name()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| format!("Diagram{}.dia", self.untitled));
-        let title = format!("{}{} — ChartCraft", if self.ed.modified { "*" } else { "" }, name);
+        // macOS: just the document's name, with unsaved changes shown by the dot in the close
+        // button instead of a star.
+        #[cfg(target_os = "macos")]
+        let title = {
+            if self.edited_shown != Some(self.ed.modified) && app_macos::set_document_edited(frame, self.ed.modified) {
+                self.edited_shown = Some(self.ed.modified);
+            }
+            name
+        };
+        #[cfg(not(target_os = "macos"))]
+        let title = {
+            let _ = &frame;
+            format!("{}{} — ChartCraft", if self.ed.modified { "*" } else { "" }, name)
+        };
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
         }
 
+        // macOS: diagrams opened from Finder (double-click, Open With, the Dock icon).
+        #[cfg(target_os = "macos")]
+        for path in app_macos::take_opened() {
+            self.open_path(&path);
+        }
         self.watch_file(&ctx);
         self.keyboard(&ctx, &mut act);
 
         let pal = pal(&ctx);
         let bar_fill = pal.panel;
+        #[cfg(target_os = "macos")]
+        self.native_menu(&ctx, &mut act);
+        #[cfg(not(target_os = "macos"))]
         egui::Panel::top("menu").frame(egui::Frame::new().fill(pal.bar).inner_margin(egui::Margin::symmetric(4, 2))).show(ui, |ui| self.menu_bar(ui, &mut act));
         egui::Panel::top("toolbar").frame(egui::Frame::new().fill(pal.bar).inner_margin(egui::Margin::symmetric(6, 3))).show(ui, |ui| self.toolbar(ui, &mut act));
         egui::Panel::bottom("status").frame(egui::Frame::new().fill(bar_fill).inner_margin(egui::Margin::symmetric(8, 3))).show(ui, |ui| {

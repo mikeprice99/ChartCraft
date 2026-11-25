@@ -34,6 +34,15 @@ pub(super) fn tool_cell(ui: &mut Ui, size: f32, selected: bool, sticky: bool) ->
     (rect, resp)
 }
 
+/// A shortcut as shown in a menu: Windows/Linux wording, or the Mac symbols.
+pub(super) fn keys(other: &'static str, mac: &'static str) -> &'static str {
+    if cfg!(target_os = "macos") {
+        mac
+    } else {
+        other
+    }
+}
+
 pub(super) fn menu_item(ui: &mut Ui, text: &str, shortcut: &str, enabled: bool) -> bool {
     let b = egui::Button::new(text).shortcut_text(shortcut);
     let clicked = ui.add_enabled(enabled, b).clicked();
@@ -129,7 +138,7 @@ fn paint_style(p: &egui::Painter, r: Rect, st: LineStyle) {
     }
 }
 
-const TOOLBOX_TOOLS: [(Tool, &str); 14] = [
+pub(super) const TOOLBOX_TOOLS: [(Tool, &str); 14] = [
     (Tool::Select, "Modify: select, move and resize (Esc)"),
     (Tool::TextEdit, "Text edit: click a shape to type in it"),
     (Tool::Magnify, "Magnify: click to zoom in, right-click to zoom out"),
@@ -196,6 +205,19 @@ impl App {
         self.coalesce = Some((key, self.ed.rev));
     }
 
+    pub(super) fn set_theme(&mut self, ctx: &egui::Context, t: ThemeChoice) {
+        if self.theme == t {
+            return;
+        }
+        self.theme = t;
+        ctx.set_theme(t.preference());
+        if self.shot.is_none() {
+            save_theme(t);
+        }
+    }
+
+    /// The menus inside the window (Windows and Linux; macOS uses the system menu bar instead).
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub(super) fn menu_bar(&mut self, ui: &mut Ui, act: &mut Option<Action>) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
@@ -308,11 +330,7 @@ impl App {
                 ui.menu_button("Theme", |ui| {
                     for t in ThemeChoice::ALL {
                         if ui.radio(self.theme == t, t.label()).clicked() && self.theme != t {
-                            self.theme = t;
-                            ui.ctx().set_theme(t.preference());
-                            if self.shot.is_none() {
-                                save_theme(t);
-                            }
+                            self.set_theme(ui.ctx(), t);
                             ui.close();
                         }
                     }
